@@ -11,12 +11,15 @@ import android.graphics.RectF;
 import android.graphics.Region;
 import android.graphics.Typeface;
 import android.os.Build;
+import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.support.v4.view.GestureDetectorCompat;
 import android.support.v4.view.ViewCompat;
 import android.support.v4.view.animation.FastOutLinearInInterpolator;
 import android.text.Layout;
 import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.SpannedString;
 import android.text.StaticLayout;
 import android.text.TextPaint;
 import android.text.TextUtils;
@@ -53,6 +56,20 @@ public class WeekView extends View {
         NONE, LEFT, RIGHT, VERTICAL
     }
 
+    public enum TextAlign {
+        LEFT(1), RIGHT(2), CENTER(3);
+
+        private final int id;
+
+        TextAlign(int id) {
+            this.id = id;
+        }
+
+        public int getValue() {
+            return id;
+        }
+    }
+
     @Deprecated
     public static final int LENGTH_SHORT = 1;
     @Deprecated
@@ -78,6 +95,7 @@ public class WeekView extends View {
     private Paint mPastBackgroundPaint;
     private Paint mFutureWeekendBackgroundPaint;
     private Paint mPastWeekendBackgroundPaint;
+    private Paint mLeftLinePaint; // vertical left line
     private Paint mNowLinePaint;
     private Paint mTodayHeaderTextPaint;
     private Paint mEventBackgroundPaint;
@@ -118,6 +136,9 @@ public class WeekView extends View {
     private int mFutureBackgroundColor = Color.rgb(245, 245, 245);
     private int mPastWeekendBackgroundColor = 0;
     private int mFutureWeekendBackgroundColor = 0;
+    private int mLeftLineColor = Color.TRANSPARENT; // vertical left line - color
+    private float mLeftLineWidth = 0; // vertical left line - width
+    private int mHeaderRowTextAlign = TextAlign.CENTER.getValue(); // day title align center
     private int mNowLineColor = Color.rgb(102, 102, 102);
     private int mNowLineThickness = 5;
     private int mHourSeparatorColor = Color.rgb(230, 230, 230);
@@ -331,6 +352,10 @@ public class WeekView extends View {
             mPastBackgroundColor = a.getColor(R.styleable.WeekView_pastBackgroundColor, mPastBackgroundColor);
             mFutureWeekendBackgroundColor = a.getColor(R.styleable.WeekView_futureWeekendBackgroundColor, mFutureBackgroundColor); // If not set, use the same color as in the week
             mPastWeekendBackgroundColor = a.getColor(R.styleable.WeekView_pastWeekendBackgroundColor, mPastBackgroundColor);
+            // Left vertical line
+            mLeftLineColor = a.getColor(R.styleable.WeekView_eventLeftLineColor, mLeftLineColor);
+            mLeftLineWidth = a.getDimension(R.styleable.WeekView_eventLeftLineWidth, mLeftLineWidth);
+            mHeaderRowTextAlign = a.getInteger(R.styleable.WeekView_headerRowTextAlign, mHeaderRowTextAlign);
             mNowLineColor = a.getColor(R.styleable.WeekView_nowLineColor, mNowLineColor);
             mNowLineThickness = a.getDimensionPixelSize(R.styleable.WeekView_nowLineThickness, mNowLineThickness);
             mHourSeparatorColor = a.getColor(R.styleable.WeekView_hourSeparatorColor, mHourSeparatorColor);
@@ -386,7 +411,7 @@ public class WeekView extends View {
         mHeaderTextPaint.setTextSize(mTextSize);
         mHeaderTextPaint.getTextBounds("00 PM", 0, "00 PM".length(), rect);
         mHeaderTextHeight = rect.height();
-        mHeaderTextPaint.setTypeface(Typeface.DEFAULT_BOLD);
+        mHeaderTextPaint.setTypeface(Typeface.DEFAULT); // DEFAULT_BOLD
 
         // Prepare header background paint.
         mHeaderBackgroundPaint = new Paint();
@@ -410,6 +435,11 @@ public class WeekView extends View {
         mHourSeparatorPaint.setStrokeWidth(mHourSeparatorHeight);
         mHourSeparatorPaint.setColor(mHourSeparatorColor);
 
+        // Prepare left vertical line paint
+        mLeftLinePaint = new Paint();
+        mLeftLinePaint.setStrokeWidth(mLeftLineWidth);
+        mLeftLinePaint.setColor(mLeftLineColor);
+
         // Prepare the "now" line color paint
         mNowLinePaint = new Paint();
         mNowLinePaint.setStrokeWidth(mNowLineThickness);
@@ -423,7 +453,7 @@ public class WeekView extends View {
         mTodayHeaderTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         mTodayHeaderTextPaint.setTextAlign(Paint.Align.CENTER);
         mTodayHeaderTextPaint.setTextSize(mTextSize);
-        mTodayHeaderTextPaint.setTypeface(Typeface.DEFAULT_BOLD);
+        mTodayHeaderTextPaint.setTypeface(Typeface.DEFAULT); // DEFAULT_BOLD
         mTodayHeaderTextPaint.setColor(mTodayHeaderTextColor);
 
         // Prepare event background color.
@@ -648,7 +678,7 @@ public class WeekView extends View {
             // Get more events if necessary. We want to store the events 3 months beforehand. Get
             // events only when it is the first iteration of the loop.
             if (mEventRects == null || mRefreshEvents ||
-                    (dayNumber == leftDaysWithGaps + 1 && mFetchedPeriod != (int) mWeekViewLoader.toWeekViewPeriodIndex(day) &&
+                    (dayNumber == leftDaysWithGaps + 1  && mWeekViewLoader != null && mFetchedPeriod != (int) mWeekViewLoader.toWeekViewPeriodIndex(day) &&
                             Math.abs(mFetchedPeriod - mWeekViewLoader.toWeekViewPeriodIndex(day)) > 0.5)) {
                 getMoreEvents(day);
                 mRefreshEvents = false;
@@ -724,17 +754,33 @@ public class WeekView extends View {
 
         // Draw the header row texts.
         startPixel = startFromPixel;
-        for (int dayNumber=leftDaysWithGaps+1; dayNumber <= leftDaysWithGaps + mNumberOfVisibleDays + 1; dayNumber++) {
+        for (int dayNumber=leftDaysWithGaps; dayNumber <= leftDaysWithGaps + mNumberOfVisibleDays; dayNumber++) {
             // Check if the day is today.
             day = (Calendar) today.clone();
-            day.add(Calendar.DATE, dayNumber - 1);
+            day.add(Calendar.DATE, dayNumber);
             boolean sameDay = isSameDay(day, today);
+            Paint paint = sameDay ? mTodayHeaderTextPaint : mHeaderTextPaint;
 
             // Draw the day labels.
             String dayLabel = getDateTimeInterpreter().interpretDate(day);
-            if (dayLabel == null)
-                throw new IllegalStateException("A DateTimeInterpreter must not return null date");
-            canvas.drawText(dayLabel, startPixel + mWidthPerDay / 2, mHeaderTextHeight + mHeaderRowPadding, sameDay ? mTodayHeaderTextPaint : mHeaderTextPaint);
+            if (dayLabel == null) throw new IllegalStateException("A DateTimeInterpreter must not return null date");
+            float shiftLeft = 0; //mNumberOfVisibleDays==1? - mHeaderColumnWidth: 0;
+//            float textWidth = mHeaderTextPaint.measureText(dayLabel);
+            if (mHeaderRowTextAlign == TextAlign.LEFT.getValue()) {
+                // left
+//                shiftLeft += (textWidth/2);
+                paint.setTextAlign(Paint.Align.LEFT);
+            } else if (mHeaderRowTextAlign == TextAlign.RIGHT.getValue()) {
+                // right
+                shiftLeft += mWidthPerDay;// - (textWidth/2);
+                paint.setTextAlign(Paint.Align.RIGHT);
+            } else {
+                //center
+                shiftLeft += mWidthPerDay/2;
+                paint.setTextAlign(Paint.Align.CENTER);
+            }
+
+            canvas.drawText(dayLabel, startPixel + shiftLeft, mHeaderTextHeight + mHeaderRowPadding, paint);
             drawAllDayEvents(day, startPixel, canvas);
             startPixel += mWidthPerDay + mColumnGap;
         }
@@ -781,7 +827,6 @@ public class WeekView extends View {
         if (mEventRects != null && mEventRects.size() > 0) {
             for (int i = 0; i < mEventRects.size(); i++) {
                 if (isSameDay(mEventRects.get(i).event.getStartTime(), date) && !mEventRects.get(i).event.isAllDay()){
-
                     // Calculate top.
                     float top = mHourHeight * 24 * mEventRects.get(i).top / 1440 + mCurrentOrigin.y + mHeaderHeight + mHeaderRowPadding * 2 + mHeaderMarginBottom + mTimeTextHeight/2 + mEventMarginVertical;
 
@@ -805,12 +850,26 @@ public class WeekView extends View {
                             bottom > mHeaderHeight + mHeaderRowPadding * 2 + mTimeTextHeight / 2 + mHeaderMarginBottom
                             ) {
                         mEventRects.get(i).rectF = new RectF(left, top, right, bottom);
-                        mEventBackgroundPaint.setColor(mEventRects.get(i).event.getColor() == 0 ? mDefaultEventColor : mEventRects.get(i).event.getColor());
+                        int eventColor = mEventRects.get(i).event.getColor();
+                        mEventBackgroundPaint.setColor(eventColor == 0 ? mDefaultEventColor : eventColor);
                         canvas.drawRoundRect(mEventRects.get(i).rectF, mEventCornerRadius, mEventCornerRadius, mEventBackgroundPaint);
+
+                        // Draw the left vertical line if needed
+                        int lineColor = mEventRects.get(i).event.getLeftLineColor();
+                        float lineWidth = mLeftLineWidth;
+                        if (lineWidth > left+right || lineWidth < 0) { lineWidth = 1; }
+                        if (lineColor == Color.TRANSPARENT) { lineColor = mLeftLineColor; }
+                        if (lineColor != Color.TRANSPARENT && lineWidth > 0) {
+                            mLeftLinePaint.setColor(lineColor);
+                            mLeftLinePaint.setStrokeWidth(lineWidth);
+                            RectF leftRect = new RectF(left, top, left+lineWidth, bottom);
+                            canvas.drawRoundRect(leftRect, mEventCornerRadius, mEventCornerRadius, mLeftLinePaint);
+                        }
+
                         drawEventTitle(mEventRects.get(i).event, mEventRects.get(i).rectF, canvas, top, left);
-                    }
-                    else
+                    } else {
                         mEventRects.get(i).rectF = null;
+                    }
                 }
             }
         }
@@ -849,8 +908,22 @@ public class WeekView extends View {
                             bottom > 0
                             ) {
                         mEventRects.get(i).rectF = new RectF(left, top, right, bottom);
-                        mEventBackgroundPaint.setColor(mEventRects.get(i).event.getColor() == 0 ? mDefaultEventColor : mEventRects.get(i).event.getColor());
+                        int color = mEventRects.get(i).event.getColor();
+                        mEventBackgroundPaint.setColor(color == 0 ? mDefaultEventColor : color);
                         canvas.drawRoundRect(mEventRects.get(i).rectF, mEventCornerRadius, mEventCornerRadius, mEventBackgroundPaint);
+
+                        // Draw the left vertical line if needed
+                        int lineColor = mEventRects.get(i).event.getLeftLineColor();
+                        float lineWidth = mLeftLineWidth;
+                        if (lineWidth > left+right || lineWidth < 0) { lineWidth = 1; }
+                        if (lineColor == Color.TRANSPARENT) { lineColor = mLeftLineColor; }
+                        if (lineColor != Color.TRANSPARENT && lineWidth > 0) {
+                            mLeftLinePaint.setColor(lineColor);
+                            mLeftLinePaint.setStrokeWidth(lineWidth);
+                            RectF leftRect = new RectF(left, top, left+lineWidth, bottom);
+                            canvas.drawRoundRect(leftRect, mEventCornerRadius, mEventCornerRadius, mLeftLinePaint);
+                        }
+
                         drawEventTitle(mEventRects.get(i).event, mEventRects.get(i).rectF, canvas, top, left);
                     }
                     else
@@ -899,7 +972,8 @@ public class WeekView extends View {
             int availableLineCount = availableHeight / lineHeight;
             do {
                 // Ellipsize text to fit into event rect.
-                textLayout = new StaticLayout(TextUtils.ellipsize(bob, mEventTextPaint, availableLineCount * availableWidth, TextUtils.TruncateAt.END), mEventTextPaint, (int) (rect.right - originalLeft - mEventPadding * 2), Layout.Alignment.ALIGN_NORMAL, 1.0f, 0.0f, false);
+                CharSequence text = TextUtils.ellipsize(bob, mEventTextPaint, availableLineCount * availableWidth, TextUtils.TruncateAt.END);
+                textLayout = new StaticLayout(text, mEventTextPaint, (int) (rect.right - originalLeft - mEventPadding * 2), Layout.Alignment.ALIGN_NORMAL, 1.0f, 0.0f, false);
 
                 // Reduce line count.
                 availableLineCount--;
@@ -1296,6 +1370,7 @@ public class WeekView extends View {
      * Get the interpreter which provides the text to show in the header column and the header row.
      * @return The date, time interpreter.
      */
+    @NonNull
     public DateTimeInterpreter getDateTimeInterpreter() {
         if (mDateTimeInterpreter == null) {
             mDateTimeInterpreter = new DateTimeInterpreter() {
